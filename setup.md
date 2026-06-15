@@ -47,6 +47,12 @@ The main script also auto-converts Chrome-format cookie lists, so this works too
 python3 x_automation_free.py "latest reactions to Python 3.13" --cookies chrome_cookies.json
 ```
 
+If the script says the cookies file is missing, try an absolute path:
+
+```bash
+python3 x_automation_free.py "latest reactions to Python 3.13" --cookies /full/path/to/chrome_cookies.json
+```
+
 Keep `cookies.json` private. It can grant access to your X session.
 
 ## Option B: Direct Login
@@ -96,6 +102,12 @@ This still costs $0 because it runs on your machine.
 
 - `No cookies found`: add `--cookies cookies.json` or set `X_USERNAME` and
   `X_PASSWORD`.
+- `Cookies file not found`: run `ls -la chrome_cookies.json`, check your current
+  directory, or pass an absolute path with `--cookies /full/path/to/cookies.json`.
+- `Couldn't get KEY_BYTE indices`: X blocked the search because it was not
+  authenticated. Use valid cookies, convert Chrome cookies with
+  `python3 convert_cookies.py chrome_cookies.json cookies.json`, or use direct
+  login environment variables.
 - `X login failed`: verify credentials, handle any X security checkpoint in your
   browser, then export cookies instead.
 - `Rate limited`: wait before retrying, lower `--limit`, or use authenticated

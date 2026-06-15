@@ -115,6 +115,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "message": "Cookie loading failed.",
         "fix": "Use convert_cookies.py or provide a JSON object like {\"auth_token\": \"...\"}.",
     },
+    "auth_required": {
+        "severity": ErrorSeverity.CRITICAL.value,
+        "message": "X blocked the search because authentication is required.",
+        "fix": "Provide valid cookies with --cookies, convert Chrome cookies, or set X_USERNAME/X_PASSWORD.",
+    },
     "search_failed": {
         "severity": ErrorSeverity.CRITICAL.value,
         "message": "X search failed.",
@@ -227,7 +232,8 @@ class XResearchAutomation:
             )
 
         self.client = Client(language)
-        self.cookies_path = Path(cookies_path or DEFAULT_COOKIES_PATH)
+        self.cookies_path_provided = cookies_path is not None
+        self.cookies_path = Path(cookies_path) if cookies_path else Path(DEFAULT_COOKIES_PATH)
         self.language = language
         self.max_tweets = max_tweets
         self.min_likes = min_likes
@@ -235,16 +241,28 @@ class XResearchAutomation:
         self.ollama_model = ollama_model
         self.errors: list[ToolError] = []
         self._initialized = False
+        logger.info("Cookie path set to: %s", self.cookies_path)
+        logger.info("Cookie absolute path: %s", self.cookies_path.absolute())
+        logger.info("Cookie file exists: %s", self.cookies_path.exists())
 
     async def initialize(self) -> None:
         """Load cookies or perform free Twikit login if credentials are present."""
         if self._initialized:
             return
 
+        logger.info("Checking cookies path argument: %s", self.cookies_path)
+        logger.info("Checking cookies absolute path: %s", self.cookies_path.absolute())
+        logger.info("Checking cookies file exists: %s", self.cookies_path.exists())
+
         if self.cookies_path.exists():
             logger.info("Loading cookies from %s", self.cookies_path)
             try:
                 cookies = load_twikit_cookies(self.cookies_path)
+                logger.info("Final cookies dict has %s entries", len(cookies))
+                logger.info(
+                    "First cookie key: %s",
+                    next(iter(cookies.keys()), "NONE"),
+                )
                 self.client.set_cookies(cookies)
                 logger.info("Cookies loaded successfully")
             except Exception as exc:  # noqa: BLE001 - cookie formats vary.
@@ -252,6 +270,14 @@ class XResearchAutomation:
                 self.errors.append(ToolError.from_code("cookies_failed", str(exc)))
             self._initialized = True
             return
+
+        if self.cookies_path_provided:
+            logger.error("Cookies file not found: %s", self.cookies_path)
+            logger.error("Absolute path checked: %s", self.cookies_path.absolute())
+            logger.warning(
+                "Fix: check the file path or use an absolute path like --cookies %s",
+                self.cookies_path.absolute(),
+            )
 
         username = os.getenv("X_USERNAME")
         email = os.getenv("X_EMAIL")
@@ -275,6 +301,10 @@ class XResearchAutomation:
             return
 
         logger.warning(ERROR_MESSAGES["no_cookies"]["message"])
+        logger.warning(
+            "X search usually requires authentication. Fix: use --cookies /full/path/to/cookies.json, "
+            "set X_USERNAME/X_PASSWORD, or run convert_cookies.py for Chrome cookies."
+        )
         self.errors.append(ToolError.from_code("no_cookies"))
         self._initialized = True
 
@@ -288,11 +318,24 @@ class XResearchAutomation:
             raw_tweets = await self.search_tweets_with_retry(query, self.max_tweets)
         except Exception as exc:  # noqa: BLE001 - Twikit exceptions vary by version.
             logger.error("Search failed: %s", exc)
-            error_code = "rate_limited" if _looks_like_rate_limit(exc) else "search_failed"
+            if _looks_like_auth_required(exc):
+                logger.error(
+                    "This usually means X blocked unauthenticated search. Fix: provide valid cookies "
+                    "with --cookies, convert Chrome cookies with convert_cookies.py, or set "
+                    "X_USERNAME/X_PASSWORD."
+                )
+                error_code = "auth_required"
+            else:
+                error_code = "rate_limited" if _looks_like_rate_limit(exc) else "search_failed"
             self.errors.append(ToolError.from_code(error_code, str(exc)))
             return ResearchResult(
                 query=query,
-                synthesized_answer="Search failed before tweets could be collected.",
+                synthesized_answer=(
+                    "X search requires authentication. Provide valid cookies or set "
+                    "X_USERNAME/X_PASSWORD."
+                    if error_code == "auth_required"
+                    else "Search failed before tweets could be collected."
+                ),
                 tweets=[],
                 errors=list(self.errors),
             )
@@ -592,6 +635,20 @@ def _looks_like_rate_limit(exc: BaseException) -> bool:
     return "rate" in text and "limit" in text or "429" in text or "too many" in text
 
 
+def _looks_like_auth_required(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    auth_markers = (
+        "key_byte",
+        "couldn't get",
+        "could not get",
+        "unauthorized",
+        "authentication",
+        "forbidden",
+        "login",
+    )
+    return any(marker in text for marker in auth_markers)
+
+
 def _looks_like_retryable_error(exc: BaseException) -> bool:
     text = f"{type(exc).__name__} {exc}".lower()
     retry_markers = (
@@ -660,7 +717,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("query", nargs="?", help="Research query to search for on X.")
     parser.add_argument("--limit", type=_positive_int, default=DEFAULT_LIMIT)
-    parser.add_argument("--cookies", default=DEFAULT_COOKIES_PATH)
+    parser.add_argument("--cookies")
     parser.add_argument("--no-summary", action="store_true")
     parser.add_argument("--min-likes", type=int, default=3)
     parser.add_argument("--min-replies", type=int, default=1)
@@ -675,6 +732,19 @@ async def async_main(args: argparse.Namespace) -> int:
     if not args.query:
         build_parser().print_help()
         return 2
+
+    if args.cookies:
+        cookies_file = Path(args.cookies)
+        if not cookies_file.exists():
+            logger.error("Cookies file not found: %s", args.cookies)
+            logger.error("Absolute path: %s", cookies_file.absolute())
+            logger.error("Fix: check the file path and use an absolute path if needed.")
+            logger.error(
+                "Example: python3 x_automation_free.py 'query' --cookies %s",
+                cookies_file.absolute(),
+            )
+            return 1
+        logger.info("Cookies file found: %s", cookies_file.absolute())
 
     bot = XResearchAutomation(
         cookies_path=args.cookies,
