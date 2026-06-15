@@ -19,26 +19,37 @@ python3 -m py_compile x_automation_free.py demo.py
 python3 x_automation_free.py --help
 ```
 
-## Most Reliable Login: Export X Cookies
+## Option A: Convert Chrome Cookies (Recommended)
 
 X usually requires a logged-in session for search. Cookies are the most reliable
 free method.
 
-1. Log in to `https://x.com` in Chrome or Edge.
+1. Log in to `https://x.com` in Chrome.
 2. Open DevTools with `Ctrl+Shift+I`.
 3. Go to `Application -> Cookies -> https://x.com`.
-4. Copy the cookies and convert them to JSON with a local or browser-based
-   cookie export workflow. One simple option is a cookies-to-JSON converter.
-5. Save the result as `cookies.json` in this project directory.
-6. Run:
+4. Right-click and export cookies, or copy cookies into a JSON export tool, then
+   save as `chrome_cookies.json`.
+5. Convert the Chrome list format to Twikit's `{name: value}` format:
+
+```bash
+python3 convert_cookies.py chrome_cookies.json cookies.json
+```
+
+6. Run a query:
 
 ```bash
 python3 x_automation_free.py "AI coding tools developer feedback" --cookies cookies.json
 ```
 
+The main script also auto-converts Chrome-format cookie lists, so this works too:
+
+```bash
+python3 x_automation_free.py "latest reactions to Python 3.13" --cookies chrome_cookies.json
+```
+
 Keep `cookies.json` private. It can grant access to your X session.
 
-## Alternative: Twikit Direct Login
+## Option B: Direct Login
 
 Twikit can also log in and save cookies automatically. This is free and uses no
 X API key.

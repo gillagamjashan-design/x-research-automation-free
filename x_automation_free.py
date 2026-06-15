@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
@@ -108,6 +109,11 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "severity": ErrorSeverity.CRITICAL.value,
         "message": "X login failed.",
         "fix": "Verify X_USERNAME, X_EMAIL if needed, and X_PASSWORD, or use --cookies cookies.json.",
+    },
+    "cookies_failed": {
+        "severity": ErrorSeverity.CRITICAL.value,
+        "message": "Cookie loading failed.",
+        "fix": "Use convert_cookies.py or provide a JSON object like {\"auth_token\": \"...\"}.",
     },
     "search_failed": {
         "severity": ErrorSeverity.CRITICAL.value,
@@ -222,6 +228,7 @@ class XResearchAutomation:
 
         self.client = Client(language)
         self.cookies_path = Path(cookies_path or DEFAULT_COOKIES_PATH)
+        self.language = language
         self.max_tweets = max_tweets
         self.min_likes = min_likes
         self.min_replies = min_replies
@@ -236,7 +243,13 @@ class XResearchAutomation:
 
         if self.cookies_path.exists():
             logger.info("Loading cookies from %s", self.cookies_path)
-            self.client.load_cookies(str(self.cookies_path))
+            try:
+                cookies = load_twikit_cookies(self.cookies_path)
+                self.client.set_cookies(cookies)
+                logger.info("Cookies loaded successfully")
+            except Exception as exc:  # noqa: BLE001 - cookie formats vary.
+                logger.error("Cookie loading failed: %s", exc)
+                self.errors.append(ToolError.from_code("cookies_failed", str(exc)))
             self._initialized = True
             return
 
@@ -454,6 +467,48 @@ def _as_list(raw_tweets: Any) -> list[Any]:
     if hasattr(raw_tweets, "__iter__") and not isinstance(raw_tweets, (str, bytes, dict)):
         return list(raw_tweets)
     return [raw_tweets]
+
+
+def load_twikit_cookies(cookies_path: Path) -> dict[str, str]:
+    """Load Chrome-exported or Twikit-format cookies as a Twikit cookie dict."""
+    with cookies_path.open("r", encoding="utf-8") as cookie_file:
+        cookies_raw = json.load(cookie_file)
+
+    if isinstance(cookies_raw, list):
+        cookies = _chrome_cookies_to_dict(cookies_raw)
+        logger.info("Converted %s cookies from Chrome format", len(cookies))
+        return cookies
+
+    if isinstance(cookies_raw, dict):
+        cookies = {
+            str(name): str(value)
+            for name, value in cookies_raw.items()
+            if name and value is not None
+        }
+        logger.info("Loaded %s cookies in Twikit format", len(cookies))
+        return cookies
+
+    raise ValueError(
+        f"Invalid cookies format: expected list or dict, got {type(cookies_raw).__name__}"
+    )
+
+
+def _chrome_cookies_to_dict(cookies_raw: list[Any]) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    for cookie in cookies_raw:
+        if (
+            isinstance(cookie, dict)
+            and "name" in cookie
+            and "value" in cookie
+            and cookie["name"]
+            and cookie["value"] is not None
+        ):
+            cookies[str(cookie["name"])] = str(cookie["value"])
+
+    if not cookies:
+        raise ValueError("Chrome cookie list did not contain any name/value pairs")
+
+    return cookies
 
 
 def _first_present(obj: Any, *names: str) -> Any:
